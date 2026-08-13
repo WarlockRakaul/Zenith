@@ -1,0 +1,22 @@
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# Local credentials and authentication material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+client_secret_*.json
+credentials*.json
+
+# Zenith data and recovery artifacts must never enter source control
+zenith-vault-backup*.json
+zenith-recovery*.txt
+backups/
+exports/

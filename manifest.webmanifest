@@ -1,0 +1,27 @@
+{
+  "name": "Zenith Journal",
+  "short_name": "Zenith",
+  "description": "A private, local-first journal and habit tracker.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f4ed",
+  "theme_color": "#171512",
+  "orientation": "portrait-primary",
+  "categories": ["lifestyle", "productivity", "health"],
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
