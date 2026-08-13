@@ -1,4 +1,4 @@
-const CACHE = "zenith-shell-v3";
+const CACHE = "zenith-shell-v4";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./secure-vault.js", "./drive-sync.js", "./config.js", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-maskable.svg"];
 
 self.addEventListener("install", (event) => {

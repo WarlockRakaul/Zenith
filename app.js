@@ -829,6 +829,11 @@ document.querySelector("#app").addEventListener("click", async (event) => {
   if (!button) return;
   const action = button.dataset.action;
 
+  // The backdrop wraps the entire dialog, so `closest()` also finds it when
+  // users click a form field. Only treat the backdrop as an action when the
+  // backdrop itself—not one of its descendants—was clicked.
+  if (action === "modal-backdrop" && event.target !== button) return;
+
   if (action === "secure-create") {
     const enrollDevice = Boolean(document.querySelector("#setup-device-unlock")?.checked);
     securityBusy = true;
