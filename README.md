@@ -15,7 +15,9 @@ Zenith now includes an encrypted local vault, offline recovery code, WebAuthn de
 - Offline app shell, installable PWA manifest, and encrypted backup/restore
 - Windows Hello/Android device unlock where WebAuthn PRF is supported
 - Encrypted Google Drive app-data backup and cross-device restore
-- In-app missed-habit reminders while Zenith is open
+- Privacy-preserving device notifications while Zenith is open or resumed
+- Automatic next-day rollover for incomplete bullet-journal tasks
+- Guided health reviews for neglected habits
 
 ## Preview it on this computer
 
@@ -64,4 +66,4 @@ node --check .\app.js
 
 ## Privacy and scope
 
-Zenith has no accounts, analytics, backend, or remote database. Calendar synchronization and true background push notifications are intentionally excluded from this local edition because both require an online OAuth/scheduling service. In-app reminders work while Zenith is open.
+Zenith has no accounts, analytics, backend, or remote database. Calendar synchronization and guaranteed push delivery while the app is fully terminated are intentionally excluded because both require an online scheduling service. Habit notifications work while Zenith is open or when it resumes, and notification taps open the habit review screen.

@@ -159,6 +159,7 @@ const createDefaultState = () => {
     version: 1,
     habits,
     habitLogs: [],
+    habitReviews: [],
     bullets: [],
     journals: [],
     collections: [],
@@ -166,6 +167,8 @@ const createDefaultState = () => {
       priorityOrder: habits.filter((habit) => habit.priority).map((habit) => habit.id),
       healthDays: 3,
       reminders: false,
+      lastHealthNotificationDate: "",
+      lastDailyNotificationDate: "",
     },
   };
 };
@@ -178,6 +181,7 @@ const normalizeState = (candidate) => {
     ...candidate,
     habits: Array.isArray(candidate.habits) ? candidate.habits : fallback.habits,
     habitLogs: Array.isArray(candidate.habitLogs) ? candidate.habitLogs : [],
+    habitReviews: Array.isArray(candidate.habitReviews) ? candidate.habitReviews : [],
     bullets: Array.isArray(candidate.bullets) ? candidate.bullets : [],
     journals: Array.isArray(candidate.journals) ? candidate.journals : [],
     collections: Array.isArray(candidate.collections) ? candidate.collections : [],
@@ -223,6 +227,7 @@ const ui = {
   pendingBulletId: null,
   pendingHabitId: null,
   pendingHabitDate: null,
+  pendingReviewHabitId: null,
   installPrompt: null,
 };
 
@@ -265,6 +270,40 @@ const lastCompleted = (habitId) =>
 const neglectedDays = (habit) => {
   const last = lastCompleted(habit.id);
   return Math.max(0, diffDays(dateKey(), last || habit.createdAt));
+};
+const lastHabitReview = (habitId) =>
+  state.habitReviews.filter((review) => review.habitId === habitId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+
+const carryOpenTasksTo = (targetDate = dateKey()) => {
+  const candidates = state.bullets.filter((entry) =>
+    entry.type === "task" && entry.status === "open" && entry.date < targetDate
+  );
+  let carried = 0;
+  candidates.forEach((entry) => {
+    const alreadyCarried = state.bullets.some((candidate) =>
+      candidate.migratedFromId === entry.id && candidate.date === targetDate
+    );
+    if (alreadyCarried) {
+      entry.status = "migrated";
+      return;
+    }
+    entry.status = "migrated";
+    entry.migratedToDate = targetDate;
+    state.bullets.push({
+      ...entry,
+      id: uid(),
+      date: targetDate,
+      status: "open",
+      completionFeeling: "",
+      tags: mergeFeelingTags(entry.tags || [], entry.creationFeeling || "", ""),
+      createdAt: new Date().toISOString(),
+      migratedFromId: entry.id,
+      carriedFromDate: entry.carriedFromDate || entry.date,
+      migratedToDate: "",
+    });
+    carried += 1;
+  });
+  return carried;
 };
 const priorityHabits = () => {
   const byId = new Map(state.habits.map((habit) => [habit.id, habit]));
@@ -344,13 +383,28 @@ const renderDriveRestoreScreen = (message = "") => {
   </section></main>`;
 };
 
+const applyRequestedView = (view) => {
+  if (view === "health") {
+    ui.page = "habits";
+    ui.habitView = "health";
+  } else if (view === "habits") {
+    ui.page = "habits";
+  }
+};
+
 const enterUnlockedApp = (unlockedState, message = "Zenith unlocked") => {
   state = migrateState(unlockedState);
   appUnlocked = true;
   ui.selectedAnnualHabit = state.habits[0]?.id || "";
+  const requestedView = new URL(location.href).searchParams.get("view");
+  applyRequestedView(requestedView);
+  if (requestedView) history.replaceState({}, "", location.pathname);
+  const carried = carryOpenTasksTo(dateKey());
   applyAutoPriority();
   renderShell();
   toast(message);
+  if (carried) toast(`${carried} open ${carried === 1 ? "task was" : "tasks were"} carried into today`);
+  checkHabitReminders();
 };
 
 const performDriveSync = async ({ background = false } = {}) => {
@@ -368,7 +422,9 @@ const performDriveSync = async ({ background = false } = {}) => {
         return;
       }
       state = migrateState(await adoptRemoteBackup(result.bundle));
+      const carried = carryOpenTasksTo(dateKey());
       lastSyncMessage = `Downloaded ${new Date(result.bundle.payload.updatedAt).toLocaleString()}`;
+      if (carried) await save();
       renderShell();
       toast("Newer encrypted backup downloaded");
       return;
@@ -580,6 +636,7 @@ const renderBulletEntry = (entry) => `
       <div class="entry-text ${entry.status}">${escapeHtml(entry.text)}</div>
       <div class="entry-meta">
         <span>${entry.type}</span>
+        ${entry.carriedFromDate ? `<span class="carry-tag">Carried from ${formatDate(entry.carriedFromDate, { month: "short", day: "numeric" })}</span>` : ""}
         ${entry.creationFeeling ? `<span class="feeling-dot" title="Before: ${feeling(entry.creationFeeling)?.label || ""}">${feeling(entry.creationFeeling)?.emoji || ""}</span>` : ""}
         ${entry.completionFeeling ? `<span>→</span><span class="feeling-dot" title="After: ${feeling(entry.completionFeeling)?.label || ""}">${feeling(entry.completionFeeling)?.emoji || ""}</span>` : ""}
         ${(entry.tags || []).filter(isFeelingTag).map((tag) => `<span class="emotion-tag">#${escapeHtml(tag)}</span>`).join("")}
@@ -655,6 +712,7 @@ const renderHabitView = () => {
 const renderHabitCard = (habit) => {
   const done = completedOn(habit.id, ui.selectedDate);
   const total = state.habitLogs.filter((log) => log.habitId === habit.id && log.completed).length;
+  const needsReview = neglectedDays(habit) >= state.settings.healthDays;
   return `
     <article class="habit-card" style="--habit-color:${habit.color}">
       <div class="habit-card-top">
@@ -664,7 +722,7 @@ const renderHabitCard = (habit) => {
           <button class="mini-icon" data-action="delete-habit" data-id="${habit.id}" aria-label="Delete ${escapeHtml(habit.name)}">${icon("trash")}</button>
         </div>
       </div>
-      <div class="habit-stats"><span><strong>${habitStreak(habit.id)}</strong> day streak</span><span><strong>${total}</strong> total</span></div>
+      <div class="habit-stats"><span><strong>${habitStreak(habit.id)}</strong> day streak</span><span><strong>${total}</strong> total</span>${needsReview ? `<button class="badge attention review-badge" data-action="review-habit" data-id="${habit.id}">Review</button>` : ""}</div>
       <button class="soft-button habit-complete ${done ? "done" : ""}" data-action="toggle-habit" data-id="${habit.id}" data-date="${ui.selectedDate}">${done ? "✓ Completed" : "Mark complete"}</button>
     </article>`;
 };
@@ -701,7 +759,9 @@ const renderHealthCheck = () => {
     ${sorted.map((habit) => {
       const days = neglectedDays(habit);
       const label = days === 0 ? "Completed recently" : days === 1 ? "Last completed yesterday" : `${days} days since completion`;
-      return `<div class="health-row" style="--habit-color:${habit.color}"><i class="health-dot"></i><div class="health-copy"><strong>${escapeHtml(habit.name)}</strong><span>${label}</span></div><span class="badge ${days >= state.settings.healthDays ? "attention" : ""}">${days >= state.settings.healthDays ? "Review" : "Healthy"}</span></div>`;
+      const reviewed = lastHabitReview(habit.id);
+      const reviewLabel = reviewed?.date === dateKey() ? "Reviewed today" : days >= state.settings.healthDays ? "Review" : "Check in";
+      return `<button class="health-row" data-action="review-habit" data-id="${habit.id}" style="--habit-color:${habit.color}" aria-label="Review ${escapeHtml(habit.name)}"><i class="health-dot"></i><span class="health-copy"><strong>${escapeHtml(habit.name)}</strong><span>${label}${reviewed ? ` · Last reviewed ${formatDate(reviewed.date, { month: "short", day: "numeric" })}` : ""}</span></span><span class="badge ${days >= state.settings.healthDays ? "attention" : ""}">${reviewLabel}</span></button>`;
     }).join("")}
   </div></div></section>`;
 };
@@ -711,6 +771,7 @@ const renderModal = () => {
   if (ui.modal === "habit") return renderHabitModal();
   if (ui.modal === "completion-feeling") return renderFeelingModal();
   if (ui.modal === "reflection") return renderReflectionModal();
+  if (ui.modal === "habit-review") return renderHabitReviewModal();
   if (ui.modal === "settings") return renderSettingsModal();
   return "";
 };
@@ -753,6 +814,21 @@ const renderReflectionModal = () => {
   return modalShell("Pause and notice", body, `<button class="ghost-button" data-action="close-modal">Skip</button><button class="primary-button" data-action="save-reflection">Save reflection</button>`);
 };
 
+const renderHabitReviewModal = () => {
+  const habit = state.habits.find((item) => item.id === ui.pendingReviewHabitId);
+  if (!habit) return "";
+  const days = neglectedDays(habit);
+  const previous = lastHabitReview(habit.id);
+  const body = `<form id="habit-review-form" class="classic-form">
+    <div class="review-summary" style="--habit-color:${habit.color}"><i class="health-dot"></i><div><strong>${escapeHtml(habit.name)}</strong><span>${days} ${days === 1 ? "day" : "days"} since completion</span></div></div>
+    ${habit.reflectionPrompt ? `<p class="prompt-text">${escapeHtml(habit.reflectionPrompt)}</p>` : ""}
+    <div class="field"><label for="review-obstacle">What got in the way?</label><textarea class="textarea" id="review-obstacle" name="obstacle" placeholder="Be honest and kind with yourself.">${escapeHtml(previous?.obstacle || "")}</textarea></div>
+    <div class="field"><label for="review-next-step">What is one realistic next step?</label><textarea class="textarea" id="review-next-step" name="nextStep" placeholder="Make the next action small and specific.">${escapeHtml(previous?.nextStep || "")}</textarea></div>
+    <div class="field"><label for="review-outcome">After this review</label><select class="select" id="review-outcome" name="outcome"><option value="continue">Keep the habit active</option><option value="priority">Move it to priorities</option><option value="complete">Mark it complete today</option></select></div>
+  </form>`;
+  return modalShell("Habit review", body, `<button class="ghost-button" data-action="close-modal">Cancel</button><button class="primary-button" data-action="submit-habit-review">Save review</button>`);
+};
+
 const renderSettingsModal = () => {
   const install = ui.installPrompt ? `<button class="primary-button" data-action="install-app">Install Zenith</button>` : "";
   const vaultStatus = getVaultStatus();
@@ -764,10 +840,10 @@ const renderSettingsModal = () => {
     <div class="settings-section"><h3>Portable encrypted backup</h3><p class="subhead">Safe to keep in ordinary storage. Restoring it still requires the offline recovery code.</p></div>
     <div class="button-row"><button class="ghost-button" data-action="export-data">${icon("download")} Export encrypted backup</button><button class="ghost-button" data-action="import-data">${icon("upload")} Import encrypted backup</button><input id="import-file" class="sr-only" type="file" accept="application/json" /></div>
     <div class="field"><label for="health-days">Health-check threshold</label><select class="select" id="health-days" data-action="health-days"><option value="2" ${state.settings.healthDays === 2 ? "selected" : ""}>2 days</option><option value="3" ${state.settings.healthDays === 3 ? "selected" : ""}>3 days</option><option value="5" ${state.settings.healthDays === 5 ? "selected" : ""}>5 days</option><option value="7" ${state.settings.healthDays === 7 ? "selected" : ""}>7 days</option></select></div>
-    <div class="switch-row"><div class="switch-copy"><strong>In-app reminders</strong><span>Show missed-habit reminders while Zenith is open.</span></div><button class="switch ${state.settings.reminders ? "on" : ""}" data-action="toggle-reminders" aria-pressed="${state.settings.reminders}"></button></div>
+    <div class="switch-row"><div class="switch-copy"><strong>Habit notifications</strong><span>${notificationPermission() === "granted" ? "Device notifications are allowed while Zenith is running or resumed." : notificationPermission() === "denied" ? "Notifications are blocked in this browser's site settings." : notificationPermission() === "unsupported" ? "This browser supports in-app reminders only." : "Turn on to allow device notifications."}</span></div><button class="switch ${state.settings.reminders ? "on" : ""}" data-action="toggle-reminders" aria-pressed="${state.settings.reminders}"></button></div>
     ${install}
     <button class="danger-button" data-action="reset-data">Delete encrypted vault from this device</button>
-    <p class="subhead">Background push notifications and calendar sync require an online service. This local edition intentionally keeps them off-device.</p>
+    <p class="subhead">Zenith checks reminders when the app is open or resumed. Guaranteed delivery while the app is completely closed would require a push server, which this private local edition does not use.</p>
   `;
   return modalShell("Data & settings", body);
 };
@@ -822,6 +898,60 @@ const applyAutoPriority = () => {
     }
   });
   save();
+};
+
+const notificationPermission = () => !window.Notification ? "unsupported" : Notification.permission;
+
+const showDeviceNotification = async (title, options) => {
+  if (notificationPermission() !== "granted") return false;
+  try {
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification(title, options);
+    } else {
+      new Notification(title, options);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const checkHabitReminders = async ({ force = false } = {}) => {
+  if (!appUnlocked || !state.settings.reminders) return;
+  const today = dateKey();
+  const neglected = state.habits.filter((habit) => neglectedDays(habit) >= state.settings.healthDays);
+  if (neglected.length && (force || state.settings.lastHealthNotificationDate !== today)) {
+    const message = `${neglected.length} ${neglected.length === 1 ? "habit needs" : "habits need"} a ${state.settings.healthDays}-day health review.`;
+    toast(message);
+    await showDeviceNotification("Zenith habit check-in", {
+      body: message,
+      tag: `zenith-health-${today}`,
+      icon: "./icons/icon.svg",
+      badge: "./icons/icon-maskable.svg",
+      data: { view: "health" },
+    });
+    state.settings.lastHealthNotificationDate = today;
+    save();
+    return;
+  }
+
+  const now = new Date();
+  const currentTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const due = state.habits.filter((habit) => !completedOn(habit.id, today) && habit.missedTime && currentTime >= habit.missedTime);
+  if (due.length && (force || state.settings.lastDailyNotificationDate !== today)) {
+    const message = `${due.length} ${due.length === 1 ? "habit is" : "habits are"} still open today.`;
+    toast(message);
+    await showDeviceNotification("Zenith daily reminder", {
+      body: message,
+      tag: `zenith-daily-${today}`,
+      icon: "./icons/icon.svg",
+      badge: "./icons/icon-maskable.svg",
+      data: { view: "habits" },
+    });
+    state.settings.lastDailyNotificationDate = today;
+    save();
+  }
 };
 
 document.querySelector("#app").addEventListener("click", async (event) => {
@@ -1009,6 +1139,9 @@ document.querySelector("#app").addEventListener("click", async (event) => {
   } else if (action === "edit-habit") {
     ui.editingHabitId = button.dataset.id;
     ui.modal = "habit";
+  } else if (action === "review-habit") {
+    ui.pendingReviewHabitId = button.dataset.id;
+    ui.modal = "habit-review";
   } else if (action === "delete-habit") {
     const habit = state.habits.find((item) => item.id === button.dataset.id);
     if (habit && confirm(`Delete “${habit.name}” and all of its tracking history?`)) {
@@ -1025,6 +1158,7 @@ document.querySelector("#app").addEventListener("click", async (event) => {
     ui.pendingBulletId = null;
     ui.pendingHabitId = null;
     ui.pendingHabitDate = null;
+    ui.pendingReviewHabitId = null;
   } else if (action === "modal-backdrop" && event.target === button) {
     ui.modal = null;
   } else if (action === "select-habit-color") {
@@ -1041,6 +1175,9 @@ document.querySelector("#app").addEventListener("click", async (event) => {
     return;
   } else if (action === "submit-habit") {
     document.querySelector("#habit-form").requestSubmit();
+    return;
+  } else if (action === "submit-habit-review") {
+    document.querySelector("#habit-review-form").requestSubmit();
     return;
   } else if (action === "completion-feeling") {
     const entry = state.bullets.find((item) => item.id === ui.pendingBulletId);
@@ -1074,7 +1211,18 @@ document.querySelector("#app").addEventListener("click", async (event) => {
     document.querySelector("#import-file").click();
     return;
   } else if (action === "toggle-reminders") {
-    state.settings.reminders = !state.settings.reminders;
+    if (state.settings.reminders) {
+      state.settings.reminders = false;
+      toast("Habit notifications turned off");
+    } else if (notificationPermission() === "unsupported") {
+      state.settings.reminders = true;
+      toast("In-app reminders turned on; device notifications are unavailable here");
+    } else {
+      const permission = notificationPermission() === "default" ? await Notification.requestPermission() : notificationPermission();
+      state.settings.reminders = permission === "granted";
+      toast(permission === "granted" ? "Habit notifications turned on" : "Allow notifications in this browser's site settings to enable them");
+      if (state.settings.reminders) checkHabitReminders({ force: true });
+    }
     save();
   } else if (action === "reset-data") {
     if (confirm("Delete this device's encrypted Zenith vault? Keep your recovery code and Google Drive backup if you may need to restore it.")) {
@@ -1193,6 +1341,43 @@ document.querySelector("#app").addEventListener("submit", async (event) => {
     renderShell();
     toast(existing ? "Habit updated" : "Habit created");
   }
+  if (event.target.id === "habit-review-form") {
+    const habit = state.habits.find((item) => item.id === ui.pendingReviewHabitId);
+    if (!habit) return;
+    const data = Object.fromEntries(new FormData(event.target));
+    const today = dateKey();
+    const review = {
+      id: uid(),
+      habitId: habit.id,
+      date: today,
+      daysNeglected: neglectedDays(habit),
+      obstacle: data.obstacle.trim(),
+      nextStep: data.nextStep.trim(),
+      outcome: data.outcome,
+      createdAt: new Date().toISOString(),
+    };
+    state.habitReviews.push(review);
+    if (data.outcome === "priority") {
+      habit.priority = true;
+      state.settings.priorityOrder = state.settings.priorityOrder.filter((id) => id !== habit.id);
+      state.settings.priorityOrder.unshift(habit.id);
+    }
+    if (data.outcome === "complete") {
+      let log = getHabitLog(habit.id, today);
+      if (!log) {
+        log = { id: uid(), habitId: habit.id, date: today, reflection: "" };
+        state.habitLogs.push(log);
+      }
+      log.completed = true;
+      log.completedAt = new Date().toISOString();
+      log.reflection = [review.obstacle, review.nextStep].filter(Boolean).join("\n");
+    }
+    ui.modal = null;
+    ui.pendingReviewHabitId = null;
+    save();
+    renderShell();
+    toast("Habit review saved");
+  }
 });
 
 document.querySelector("#app").addEventListener("change", async (event) => {
@@ -1226,6 +1411,12 @@ window.addEventListener("beforeinstallprompt", (event) => {
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "zenith-open-view" || !appUnlocked) return;
+    applyRequestedView(event.data.view);
+    ui.modal = null;
+    renderShell();
+  });
 }
 
 const bootstrapSecurity = async () => {
@@ -1244,13 +1435,8 @@ const bootstrapSecurity = async () => {
 
 bootstrapSecurity();
 
-setInterval(() => {
-  if (!appUnlocked || !state.settings.reminders) return;
-  const now = new Date();
-  const currentTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const due = state.habits.find((habit) => !completedOn(habit.id, dateKey()) && habit.missedTime && currentTime >= habit.missedTime);
-  if (due && sessionStorage.getItem("zenith-reminded") !== dateKey()) {
-    toast(`Gentle reminder: ${due.name} is still open today`);
-    sessionStorage.setItem("zenith-reminded", dateKey());
-  }
-}, 60000);
+setInterval(() => checkHabitReminders(), 60000);
+window.addEventListener("focus", () => checkHabitReminders());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkHabitReminders();
+});
