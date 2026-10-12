@@ -67,3 +67,7 @@ node --check .\app.js
 ## Privacy and scope
 
 Zenith has no accounts, analytics, backend, or remote database. Calendar synchronization and guaranteed push delivery while the app is fully terminated are intentionally excluded because both require an online scheduling service. Habit notifications work while Zenith is open or when it resumes, and notification taps open the habit review screen.
+
+## Development workstream guidance
+
+Read [PMO workstream guidance](PMO_GUIDANCE.md) before coding; [AGENTS.md](AGENTS.md) provides the development entry point. This repository guidance does not change the journal application.
